@@ -1,4 +1,4 @@
-clear all;
+clear;
 clc;
 
 %% Wczytanie i przygotowanie sygnału wejściowego
@@ -8,7 +8,7 @@ x1 = x1(:,1); % wybór tylko jednego kanału (mono)
 %% Parametry kodowania
 N = 256;     % długość segmentu
 r = 10;      % rząd modelu AR
-m = 3;       % liczba bitów dla kwantyzacji (zmień na 2, 3, 4 według potrzeby)
+m = 1;       % liczba bitów dla kwantyzacji (zmień na 2, 3, 4 według potrzeby)
 
 %% Podział sygnału na segmenty z nakładaniem, spłaszczenie i zerowanie końców
 podzielone = podzial(x1);                   % segmentacja sygnału (nakładanie 10 próbek)
