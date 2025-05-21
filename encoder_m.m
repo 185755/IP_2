@@ -1,5 +1,5 @@
 clear; close all;
-[input, fs] = audioread('pan_tadeusz1.wav');
+[input, fs] = audioread('voice.wav');
 input = input(:,1);
 
 N = 256;
@@ -44,7 +44,7 @@ delta = (xmax - xmin) / (mLvl - 1)
 indices = round((eMax -xmin)/delta);
 indices = max(0, min(indices, mLvl-1));
 
-plot(indices)
+plot(indices * delta)
 hold on;
 plot(eMax)
 hold off;
@@ -65,7 +65,7 @@ function [a, sigma, k] = L_D(pi, r)
 
     for i = 2:r
         sum_k = 0;
-        for j = i:i-1
+        for j = 1:i-1
             sum_k = sum_k + a(j)*pi(i-j+1);
         end
         k(i) = -(pi(i+1)+sum_k)/sigma(i);
