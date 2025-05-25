@@ -1,5 +1,7 @@
 clear; close all;
-[input, fs] = audioread('voice.wav');
+% [input, fs] = audioread('voice.wav');
+[input, fs] = audioread('pan_tadeusz1.wav');
+
 input = input(:,1);
 
 N = 256;
@@ -10,6 +12,8 @@ mLvl = m ^ 2; %posible levels
 window = 0.5 * (1 - cos((2*pi / (N+1)*(1:N))));
 splited = zeros(floor(length(input)/246), 256);
 step = N - r;
+
+output = fopen("encoded" + int2str(m)+ ".bin", 'wb');
 
 splited(1, :) = input(1:256)';
 for i=2:(size(splited, 1))
@@ -30,24 +34,31 @@ for i= 1:size(extended, 1)
 end
 
 eMax = zeros(length(extended), 1);
+e = zeros(size(eMax, 1), size(extended, 2));
 for i = 1:length(eMax)
-    e = zeros(N, 1);
     for j = 1 : N
-        e(j) = extended(i, j+r) + a(i,:) * extended(i, j+r-1 : -1 : j)';
+        e(i, j) = extended(i, j+r) + a(i,:) * extended(i, j+r-1 : -1 : j)';
     end
-    eMax(i) = max(abs(e));
+    eMax(i) = max(abs(e(i, :)));
 end
-xmin = min(eMax)
-xmax = max(eMax)
-delta = (xmax - xmin) / (mLvl - 1)
 
-indices = round((eMax -xmin)/delta);
-indices = max(0, min(indices, mLvl-1));
+for i = 1 : length(a)
+    fwrite(output, eMax(i), "float32");
+    fwrite(output, a(i,:), "float32");
 
-plot(indices * delta)
-hold on;
-plot(eMax)
-hold off;
+    eMin = -eMax(i);
+    delta = (eMax(i) - eMin) / (mLvl - 1);
+
+    indices(i, :) = round((e(i, :) -eMin)/delta);
+    indices(i, :) = max(0, min(indices(i, :), mLvl-1));
+    fwrite(output, indices(i, :), "ubit2");
+end
+
+original_size = dir('pan_tadeusz1.wav').bytes;
+encoded_size = dir("encoded" + int2str(m)+ ".bin").bytes;
+compression_ratio = original_size / encoded_size;
+        
+fprintf('m=%d bits: Compression ratio = %.2f:1\n', m, compression_ratio);
 
 function [a, sigma, k] = L_D(pi, r)
     a = zeros(r, 1);
