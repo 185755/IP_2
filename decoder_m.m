@@ -1,7 +1,7 @@
 clear;
 clc;
 
-filename = 'encoded8.bin';  % zakładam m=3
+filename = 'encoded4.bin';  % zakładam m=3
 fid = fopen(filename, 'rb');
 
 r = 10;

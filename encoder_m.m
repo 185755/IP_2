@@ -6,7 +6,7 @@ input = input(:,1);
 N = 256;
 r = 10;
 
-m = 8; %quantization level
+m = 4; %quantization level
 mLvl = m ^ 2; %possible levels 
 window = 0.5 * (1 - cos((2*pi / (N+1)*(1:N))));
 

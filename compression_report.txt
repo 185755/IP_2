@@ -1,0 +1,3 @@
+Quantization bits: 2, Compression ratio: 4.56
+Quantization bits: 3, Compression ratio: 3.52
+Quantization bits: 4, Compression ratio: 2.86

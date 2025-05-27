@@ -32,11 +32,11 @@ function predictive_encoder()
     end
     y = y(:)'; % Ensure row vector
     
-    % Added: Normalize input signal to [-1, 1] to maximize quantization range
+    % Normalize input signal to [-1, 1]
     y = y / max(abs(y));
     
-    % Added: Apply pre-emphasis filter to boost high frequencies (reduces audible noise)
-    pre_emphasis_coeff = 0.95;
+    % Modified: Use gentler pre-emphasis (0.7 instead of 0.95)
+    pre_emphasis_coeff = 0.7;
     y = filter([1, -pre_emphasis_coeff], 1, y);
     
     % Create output directory if it doesn't exist
@@ -77,6 +77,9 @@ function predictive_encoder()
             % Levinson-Durbin algorithm to find AR coefficients
             [a, ~] = levinson_durbin(padded_segment, r);
             
+            % Modified: Ensure filter stability by reflecting poles
+            a = stabilize_filter(a);
+            
             % Calculate residual errors
             errors = filter(a, 1, padded_segment);
             errors = errors(r+1:r+N); % Remove zero-padding effects
@@ -85,24 +88,14 @@ function predictive_encoder()
             emax = max(abs(errors));
             if emax == 0, emax = 1; end % Avoid division by zero
             
-            % Added: Adaptive quantization with triangular dither
+            % Modified: Simpler uniform quantization without dither
             levels = 2^m;
-            quant_step = emax / 8; % Initial step size
-            quantized_errors = zeros(1, length(errors));
-            for k = 1:length(errors)
-                dither = quant_step * (rand() - rand()); % Triangular dither to reduce distortion
-                delta = (errors(k) + dither) / quant_step;
-                quantized_delta = round(delta * (levels-1)/2) / ((levels-1)/2);
-                quantized_errors(k) = quantized_delta * quant_step;
-                % Adapt step size based on signal magnitude
-                quant_step = quant_step * (1.2 * abs(quantized_delta) + 0.8);
-                quant_step = max(quant_step/10, min(quant_step, emax)); % Clamp
-            end
+            quant_step = 2*emax / (levels-1);
+            quantized_errors = round(errors/quant_step) * quant_step;
             
             % Write to file
             fwrite(fid, a(2:end), 'float32'); % a(1) is always 1
-            % Modified: Write initial quant_step instead of emax
-            fwrite(fid, quant_step, 'float32');
+            fwrite(fid, emax, 'float32');
             
             % Pack quantized errors into bits
             packed_errors = pack_errors(quantized_errors, emax, m);
@@ -121,13 +114,28 @@ function predictive_encoder()
     end
 end
 
-% Levinson-Durbin (unchanged)
+% New function to ensure filter stability
+function a_stable = stabilize_filter(a)
+    % Convert to poles and reflect those outside unit circle
+    poles = roots(a);
+    for i = 1:length(poles)
+        if abs(poles(i)) > 1
+            poles(i) = 1/conj(poles(i));
+        end
+    end
+    % Convert back to polynomial form
+    a_stable = real(poly(poles));
+    % Normalize
+    a_stable = a_stable / a_stable(1);
+end
+
+% Levinson-Durbin (modified for better numerical stability)
 function [a, E] = levinson_durbin(x, p)
-    % Autocorrelation
+    % Autocorrelation with small regularization
     N = length(x);
     r = zeros(1, p+1);
     for k = 0:p
-        r(k+1) = x(1:N-k) * x(k+1:N)';
+        r(k+1) = x(1:N-k) * x(k+1:N)' + 1e-6*(k==0); % Small regularization
     end
     
     % Initialize
@@ -192,7 +200,7 @@ function predictive_decoder()
     end
     original_signal = original_signal(:)'; % Ensure row vector
     
-    % Added: Normalize original signal for fair comparison
+    % Normalize original signal for fair comparison
     original_signal = original_signal / max(abs(original_signal));
     
     for i = 1:length(encoded_files)
@@ -213,24 +221,18 @@ function predictive_decoder()
             % Read AR coefficients
             a = [1, fread(fid, 10, 'float32')']; % a(1) is always 1
             
-            % Modified: Read initial quant_step instead of emax
-            quant_step = fread(fid, 1, 'float32');
+            % Read emax
+            emax = fread(fid, 1, 'float32');
             packed_length = fread(fid, 1, 'uint16');
             packed_errors = fread(fid, packed_length, 'uint8')';
             
             % Unpack errors
             errors = unpack_errors(packed_errors, m, 256);
             
-            % Added: Reconstruct residuals with adaptive step
+            % Modified: Scale errors back to original range
             levels = 2^m;
-            quant_step_initial = quant_step; % Store initial step size
-            reconstructed_errors = zeros(1, 256);
-            for k = 1:256
-                reconstructed_errors(k) = errors(k) * quant_step;
-                quant_step = quant_step * (1.2 * abs(errors(k)) + 0.8);
-                quant_step = max(quant_step_initial/10, min(quant_step, quant_step_initial));
-            end
-            errors = reconstructed_errors;
+            quant_step = 2*emax / (levels-1);
+            errors = errors * quant_step;
             
             % Reconstruct signal
             segment = zeros(1, 256);
@@ -261,25 +263,30 @@ function predictive_decoder()
             % Update previous samples (with overlap)
             prev_samples = segment(end-9:end);
             
-            % Modified: Overlap-add with Hann window to reduce discontinuities
+            % Modified: Improved overlap-add with raised cosine window
             overlap = 10;
-            hann_window = 0.5 * (1 - cos(2*pi*(0:overlap-1)/(overlap-1)));
             if isempty(reconstructed)
                 reconstructed = segment;
             else
-                overlap_start = length(reconstructed) - overlap + 1;
-                overlap_end = length(reconstructed);
-                reconstructed(overlap_start:overlap_end) = ...
-                    reconstructed(overlap_start:overlap_end) .* (1-hann_window) + ...
-                    segment(1:overlap) .* hann_window;
-                reconstructed = [reconstructed, segment(overlap+1:end)];
+                % Apply window to both segments
+                win = hann(2*overlap)';
+                win1 = win(1:overlap);
+                win2 = win(overlap+1:end);
+                
+                % Blend the overlapping regions
+                overlap_region_old = reconstructed(end-overlap+1:end);
+                overlap_region_new = segment(1:overlap);
+                blended = overlap_region_old.*win1 + overlap_region_new.*win2;
+                
+                % Combine segments
+                reconstructed = [reconstructed(1:end-overlap), blended, segment(overlap+1:end)];
             end
         end
         
         fclose(fid);
         
-        % Added: Apply de-emphasis filter to reverse pre-emphasis
-        pre_emphasis_coeff = 0.95;
+        % Modified: Use gentler de-emphasis (0.7 instead of 0.95)
+        pre_emphasis_coeff = 0.7;
         reconstructed = filter(1, [1, -pre_emphasis_coeff], reconstructed);
         
         % Trim reconstructed signal to match original length
@@ -310,7 +317,7 @@ function predictive_decoder()
     end
 end
 
-% Unpack Errors
+% Unpack Errors (unchanged)
 function errors = unpack_errors(packed, m, N)
     % Unpack bits to errors
     levels = 2^m;
@@ -348,7 +355,7 @@ function errors = unpack_errors(packed, m, N)
             end
         end
         
-        % Modified: Convert back to error value, assuming quant_step scaling in decoder
-        errors(i) = (value * 2 / (levels-1) - 1); % Scale to [-1, 1] for adaptive quantization
+        % Scale to [0, levels-1]
+        errors(i) = value;
     end
 end
