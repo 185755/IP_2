@@ -1,73 +1,61 @@
 % audio_compression_stable.m
-% Implements predictive coding with optimized compression
-% Generates full reconstructed audio files with proper overlap-add
-% Plays entire reconstructed clip
-% Optionally saves segment files for debugging
+% Implementuje kodowanie predykcyjne z optymalną kompresją
+% Generuje pełne pliki audio zrekonstruowanego sygnału z poprawnym dodawaniem nakładającym się
+% Odtwarza cały zrekonstruowany klip
+% Opcjonalnie zapisuje pliki segmentów do debugowania
 
-% Parameters
-fs = 11025;         % Sampling frequency
-N = 512;           % Segment size (increased for fewer segments)
-r = 10;            % AR model order
-overlap = 20;      % Overlap samples (increased)
-quant_bits = [2, 3, 4]; % Quantization levels
-epsilon = 1e-6;    % Small constant for window
-residual_scale = 1000; % Scale residuals to avoid quantization loss
-save_segments = true; % Flag to save debug segment files
+% Parametry
+fs = 11025;         % Częstotliwość próbkowania
+N = 512;           % Rozmiar segmentu (zwiększony dla mniejszej liczby segmentów)
+r = 10;            % Rząd modelu AR
+overlap = 20;      % Próbki nakładania (zwiększone)
+quant_bits = [2, 3, 4]; % Poziomy kwantyzacji
+epsilon = 1e-6;    % Mała stała dla okna
+residual_scale = 1000; % Skala reszt do uniknięcia utraty kwantyzacji
+save_segments = true; % Flaga do zapisu plików segmentów debugowania
 
-% Read input WAV file (assuming 16-bit PCM, mono)
+% Odczyt pliku WAV wejściowego (zakładając 16-bitowy PCM, mono)
 try
     [audio, fs_in] = audioread('pan_tadeusz1.wav');
 catch e
-    error('Failed to read pan_tadeusz1.wav: %s', e.message);
+    error('Nie udało się odczytać pan_tadeusz1.wav: %s', e.message);
 end
-assert(fs_in == fs, 'Sampling frequency must be 11025 Hz');
-assert(size(audio,2) == 1, 'Input must be mono');
-audio = audio(:)'; % Ensure row vector
+assert(fs_in == fs, 'Częstotliwość próbkowania musi wynosić 11025 Hz');
+assert(size(audio,2) == 1, 'Wejście musi być mono');
+audio = audio(:)'; % Upewnij się, że jest wektorem wierszowym
 
-% Check input signal amplitude and duration
+% Sprawdzenie amplitudy i czasu trwania sygnału wejściowego
 input_amplitude = max(abs(audio));
 input_duration = length(audio) / fs;
 if input_amplitude < 1e-6
-    warning('Input signal amplitude is very low (max = %.2e). Output may be silent.', input_amplitude);
+    warning('Amplituda sygnału wejściowego jest bardzo niska (max = %.2e). Wyjście może być ciche.', input_amplitude);
 end
 
-% Window function (rectangular to avoid inverse issues)
+% Funkcja okna (prostokątne, aby uniknąć problemów z odwróceniem)
 window = ones(1, N);
 
-% Initialize output file for reconstruction report
+% Inicjalizacja pliku wyjściowego dla raportu rekonstrukcji
 fid_report = fopen('reconstruction_report.txt', 'w');
-fprintf(fid_report, 'Reconstruction Report\n');
+fprintf(fid_report, 'Raport Rekonstrukcji\n');
 fprintf(fid_report, '====================\n');
-fprintf(fid_report, 'Input file: pan_tadeusz1.wav\n');
-fprintf(fid_report, 'Sampling frequency: %d Hz\n', fs);
-fprintf(fid_report, 'Segment size: %d samples\n', N);
-fprintf(fid_report, 'AR model order: %d\n', r);
-fprintf(fid_report, 'Overlap: %d samples\n');
-fprintf(fid_report, 'Input signal max amplitude: %.2e\n', input_amplitude);
-fprintf(fid_report, 'Input duration: %.2f seconds\n');
-fprintf(fid_report, 'Input size: %d bytes\n\n', numel(audio) * 2); % 16-bit = 2 bytes per sample
 
-% Output first 10 samples of input signal
-fprintf(fid_report, 'First 10 samples of input signal:\n');
-fprintf(fid_report, '%.6f\n', audio(1:min(10, length(audio))));
-
-% Initialize plot data
+% Inicjalizacja danych wykresu
 residual_amplitudes = [];
 recon_amplitudes = [];
 
 for m = quant_bits
-    % Transmitter: Compression
+    % Nadajnik: Kompresja
     num_samples = length(audio);
     num_segments = floor((num_samples - N) / (N - overlap)) + 1;
     
-    % Initialize storage for compressed data
-    all_a = zeros(num_segments, r, 'single'); % float32 for coefficients
-    all_emax = zeros(num_segments, 1, 'single'); % float32 for e_max
-    all_e_quant_indices = zeros(num_segments, N, 'uint8'); % Quantization indices
+    % Inicjalizacja pamięci dla danych skompresowanych
+    all_a = zeros(num_segments, r, 'single'); % float32 dla współczynników
+    all_emax = zeros(num_segments, 1, 'single'); % float32 dla e_max
+    all_e_quant_indices = zeros(num_segments, N, 'uint8'); % Indeksy kwantyzacji
     
-    % Process each segment
+    % Przetwarzanie każdego segmentu
     for seg = 1:num_segments
-        % Extract segment with overlap
+        % Wyodrębnienie segmentu z nakładaniem
         start_idx = 1 + (seg-1) * (N - overlap);
         end_idx = min(start_idx + N - 1, num_samples);
         segment = audio(start_idx:end_idx);
@@ -75,80 +63,80 @@ for m = quant_bits
             segment = [segment, zeros(1, N - length(segment))];
         end
         
-        % Apply window
+        % Zastosowanie okna
         segment_windowed = segment .* window;
         
-        % Pad with zeros
+        % Wypełnienie zerami
         padded_segment = [zeros(1, r), segment_windowed, zeros(1, r)];
         
-        % Levinson-Durbin algorithm for AR coefficients
+        % Algorytm Levinson-Durbin dla współczynników AR
         [a, k] = levinson_durbin(padded_segment, r);
         
-        % Check AR stability via reflection coefficients
+        % Sprawdzenie stabilności AR za pomocą współczynników odbicia
         if any(abs(k) >= 1)
-            fprintf(fid_report, 'Warning: Unstable AR coefficients in segment %d (m=%d bits). Adjusting.\n', seg, m);
-            k = min(max(k, -0.99), 0.99); % Clamp reflection coefficients
-            a = k2a(k); % Convert back to AR coefficients
+            fprintf(fid_report, 'Ostrzeżenie: Niestabilne współczynniki AR w segmencie %d (m=%d bitów). Dostosowanie.\n', seg, m);
+            k = min(max(k, -0.99), 0.99); % Przycięcie współczynników odbicia
+            a = k2a(k); % Konwersja z powrotem na współczynniki AR
         end
         
-        % Store AR coefficients
-        all_a(seg, :) = a(2:end); % Exclude a(0)=1
+        % Zapis współczynników AR
+        all_a(seg, :) = a(2:end); % Wyklucz a(0)=1
         
-        % Calculate residual error using filter
+        % Obliczenie błędu resztkowego za pomocą filtru
         a_full = [1, a(2:end)];
         e = filter(a_full, 1, segment_windowed);
-        e = e(1:N); % Trim to segment length
+        e = e(1:N); % Przycięcie do długości segmentu
         
-        % Check residual amplitude
+        % Sprawdzenie amplitudy resztkowej
         e_max = max(abs(e));
         all_emax(seg) = e_max;
         if e_max < 1e-6
-            fprintf(fid_report, 'Warning: Segment %d (m=%d bits) has very low e_max (%.2e).\n', seg, m, e_max);
-            e_max = 1e-6; % Prevent division by zero
+            fprintf(fid_report, 'Ostrzeżenie: Segment %d (m=%d bitów) ma bardzo niską e_max (%.2e).\n', seg, m, e_max);
+            e_max = 1e-6; % Zapobieganie dzieleniu przez zero
         end
         
-        % Scale residuals to avoid quantization loss
+        % Skalowanie reszt, aby uniknąć utraty kwantyzacji
         e_scaled = e * residual_scale;
         e_max_scaled = e_max * residual_scale;
         
-        % Quantization
+        % Kwantyzacja
         levels = 2^m;
         delta = 2 * e_max_scaled / (levels - 1);
-        e_quant_indices = round((e_scaled + e_max_scaled) / delta); % Map to [0, 2^m-1]
-        e_quant_indices = max(0, min(levels-1, e_quant_indices)); % Clamp
+        e_quant_indices = round((e_scaled + e_max_scaled) / delta); % Mapowanie na [0, 2^m-1]
+        e_quant_indices = max(0, min(levels-1, e_quant_indices)); % Przycięcie
         all_e_quant_indices(seg, :) = e_quant_indices;
         
-        % Log residual amplitude
-        fprintf(fid_report, 'Segment %d (m=%d bits) max residual amplitude: %.2e\n', seg, m, e_max);
+        % Logowanie amplitudy resztkowej
+      
         residual_amplitudes = [residual_amplitudes, e_max];
     end
     
-    % Save compressed data
+    % Zapis danych skompresowanych
     filename = sprintf('compressed_m%d.bin', m);
     fid = fopen(filename, 'w');
-    fwrite(fid, all_a(:), 'float32'); % 32 bits per coefficient
-    fwrite(fid, all_emax, 'float32'); % 32 bits per e_max
-    fwrite(fid, all_e_quant_indices(:), 'uint8'); % 8 bits per index (padded)
-    fwrite(fid, residual_scale, 'float32'); % 32 bits
-    fwrite(fid, m, 'uint8'); % Store quantization bits
+    fwrite(fid, all_a(:), 'float32'); % 32 bity na współczynnik
+    fwrite(fid, all_emax, 'float32'); % 32 bity na e_max
+    fwrite(fid, all_e_quant_indices(:), 'uint8'); % 8 bitów na indeks (wypełnione)
+    fwrite(fid, residual_scale, 'float32'); % 32 bity
+    fwrite(fid, m, 'uint8'); % Zapis bitów kwantyzacji
     fclose(fid);
     
-    % Calculate compression ratio
-    bits_per_residual = m; % Actual bits used in quantization
-    compressed_size = (num_segments * r * 32 + num_segments * 32 + num_segments * N * 8 + 32 + 8); % bits
-    original_size = num_samples * 16; % bits
+    % Obliczenie stosunku kompresji
+    bits_per_residual = m; % Rzeczywiste bity użyte w kwantyzacji
+    compressed_size = (num_segments * r * 32 + num_segments * 32 + num_segments * N * 8 + 32 + 8); % bity
+    original_size = num_samples * 16; % bity
     compression_ratio = original_size / compressed_size;
     
-    % Get actual file size
+    % Pobranie rzeczywistego rozmiaru pliku
     file_info = dir(filename);
     compressed_bytes = file_info.bytes;
     
-    % Receiver: Decompression
+    % Odbiornik: Dekompresja
     reconstructed = zeros(1, num_samples);
-    weight_sum = zeros(1, num_samples); % Track overlap weights
-    overlap_window = ones(1, N); % Uniform weight for overlap-add
+    weight_sum = zeros(1, num_samples); % Śledzenie wag nakładania
+    overlap_window = ones(1, N); % Jednolite okno dla dodawania nakładającego się
     
-    % Read compressed data
+    % Odczyt danych skompresowanych
     fid = fopen(filename, 'r');
     read_a = fread(fid, [num_segments, r], 'float32');
     read_emax = fread(fid, num_segments, 'float32');
@@ -157,93 +145,89 @@ for m = quant_bits
     read_m = fread(fid, 1, 'uint8');
     fclose(fid);
     
-    % Check for file read errors
+    % Sprawdzenie błędów odczytu pliku
     if any(size(read_a) ~= [num_segments, r]) || length(read_emax) ~= num_segments || any(size(read_e_quant_indices) ~= [num_segments, N]) || isempty(read_scale) || isempty(read_m)
-        fprintf(fid_report, 'Error: File read error for m=%d bits. Check compressed file integrity.\n', m);
+        fprintf(fid_report, 'Błąd: Błąd odczytu pliku dla m=%d bitów. Sprawdź integralność pliku skompresowanego.\n', m);
         continue;
     end
-    assert(read_m == m, 'Quantization bits mismatch in compressed file.');
+    assert(read_m == m, 'Niezgodność bitów kwantyzacji w pliku skompresowanym.');
     
-    % Reconstruct signal with overlap-add
+    % Rekonstrukcja sygnału z dodawaniem nakładającym się
     for seg = 1:num_segments
-        a = [1, read_a(seg, :)]; % Include a(0)=1
+        a = [1, read_a(seg, :)]; % Włącz a(0)=1
         e_max = read_emax(seg);
         e_quant_indices = read_e_quant_indices(seg, :);
         
         start_idx = 1 + (seg-1) * (N - overlap);
         end_idx = min(start_idx + N - 1, num_samples);
         
-        % Skip silent segments
+        % Pomiń ciche segmenty
         if e_max < 1e-6
             segment_recon = zeros(1, N);
         else
-            % Reconstruct residuals
+            % Rekonstrukcja reszt
             levels = 2^m;
             delta = 2 * (e_max * read_scale) / (levels - 1);
             e_quant = (e_quant_indices * delta - (e_max * read_scale)) / read_scale;
-            % Reconstruct using filter
+            % Rekonstrukcja za pomocą filtru
             segment_recon = filter(1, a, e_quant);
             segment_recon = segment_recon(1:N);
         end
         
-        % Check for NaNs or Infs
+        % Sprawdzenie NaN lub Inf
         if any(isnan(segment_recon)) || any(isinf(segment_recon))
-            fprintf(fid_report, 'Warning: NaN or Inf in segment %d (m=%d bits). Setting to zero.\n', seg, m);
+            fprintf(fid_report, 'Ostrzeżenie: NaN lub Inf w segmencie %d (m=%d bitów). Ustawienie na zero.\n', seg, m);
             segment_recon(isnan(segment_recon) | isinf(segment_recon)) = 0;
         end
         
-        % Log segment amplitude
-        fprintf(fid_report, 'Segment %d (m=%d bits) max reconstructed amplitude: %.2e\n', seg, m, max(abs(segment_recon)));
+        
+       
         recon_amplitudes = [recon_amplitudes, max(abs(segment_recon))];
         
-        % Overlap-add
+        % Dodawanie nakładające się
         if end_idx >= start_idx
             segment_len = end_idx - start_idx + 1;
             reconstructed(start_idx:end_idx) = reconstructed(start_idx:end_idx) + segment_recon(1:segment_len) .* overlap_window(1:segment_len);
             weight_sum(start_idx:end_idx) = weight_sum(start_idx:end_idx) + overlap_window(1:segment_len);
         end
         
-        % Save segment for debugging (optional, first 20 segments)
-        if save_segments && seg <= 20
-            audiowrite(sprintf('debug_segment_%d_m%d.wav', seg, m), segment_recon, fs);
-        end
     end
     
-    % Normalize overlapping regions
-    weight_sum(weight_sum == 0) = 1; % Avoid division by zero
+    % Normalizacja regionów nakładających się
+    weight_sum(weight_sum == 0) = 1; % Unikanie dzielenia przez zero
     reconstructed = reconstructed ./ weight_sum;
     
-    % Handle remaining samples
+    % Obsługa pozostałych próbek
     if end_idx < num_samples
-        reconstructed(end_idx+1:num_samples) = audio(end_idx+1:num_samples); % Pad with original audio
+        reconstructed(end_idx+1:num_samples) = audio(end_idx+1:num_samples); % Wypełnienie oryginalnym audio
     end
     
-    % Verify full reconstructed signal
+    % Weryfikacja pełnego sygnału zrekonstruowanego
     recon_amplitude = max(abs(reconstructed));
     recon_duration = length(reconstructed) / fs;
     if recon_amplitude < 1e-6
-        fprintf(fid_report, 'Warning: Full reconstructed signal (m=%d bits) has near-zero amplitude (%.2e).\n', m, recon_amplitude);
+        fprintf(fid_report, 'Ostrzeżenie: Pełny sygnał zrekonstruowany (m=%d bitów) ma prawie zerową amplitudę (%.2e).\n', m, recon_amplitude);
     end
     
-    % Normalize to match input amplitude
+    % Normalizacja do dopasowania amplitudy wejściowej
     if recon_amplitude > 0
         reconstructed = reconstructed * (input_amplitude / recon_amplitude);
     end
     
-    % Save full reconstructed audio
+    % Zapis pełnego audio zrekonstruowanego
     recon_filename = sprintf('reconstructed_m%d.wav', m);
     audiowrite(recon_filename, reconstructed, fs);
-    fprintf(fid_report, 'Saved full reconstructed file: %s\n', recon_filename);
+    fprintf(fid_report, 'Zapisano pełny plik zrekonstruowany: %s\n', recon_filename);
     fprintf(fid_report, 'Full reconstructed max amplitude: %.2e\n', max(abs(reconstructed)));
-    fprintf(fid_report, 'Full reconstructed duration: %.2f seconds\n', recon_duration);
-    fprintf(fid_report, 'Compressed file size: %d bytes\n', compressed_bytes);
+    fprintf(fid_report, 'Czas trwania pełnego zrekonstruowanego: %.2f sekund\n', recon_duration);
+    fprintf(fid_report, 'Rozmiar pliku skompresowanego: %d bajtów\n', compressed_bytes);
     
-    % Play entire reconstructed clip
-    fprintf('Playing full reconstructed clip for m=%d bits (%.2f seconds)...\n', m, recon_duration);
+    % Odtwarzanie całego zrekonstruowanego klipu
+    fprintf('Odtwarzanie pełnego zrekonstruowanego klipu dla m=%d bitów (%.2f sekund)...\n', m, recon_duration);
     soundsc(reconstructed, fs);
-    pause(recon_duration + 1); % Wait for playback to finish plus 1 second buffer
+    pause(recon_duration + 1); % Poczekaj na zakończenie odtwarzania plus 1-sekundowy bufor
     
-    % Calculate SNR
+    % Obliczenie SNR
     noise = audio(1:length(reconstructed)) - reconstructed;
     signal_power = mean(audio(1:length(reconstructed)).^2);
     noise_power = mean(noise.^2);
@@ -251,44 +235,40 @@ for m = quant_bits
         snr_db = 10 * log10(signal_power / noise_power);
     else
         snr_db = Inf;
-        fprintf(fid_report, 'Warning: Zero noise power for m=%d bits. SNR set to Inf.\n', m);
+        fprintf(fid_report, 'Ostrzeżenie: Zerowa moc szumu dla m=%d bitów. SNR ustawione na Inf.\n', m);
     end
     
-    % Output first 10 samples of reconstructed signal
-    fprintf(fid_report, 'First 10 samples of reconstructed signal (m=%d bits):\n', m);
-    fprintf(fid_report, '%.6f\n', reconstructed(1:min(10, length(reconstructed))));
-    
-    % Write to report
-    fprintf(fid_report, 'Quantization: %d bits\n', m);
-    fprintf(fid_report, 'Compression ratio: %.2f\n', compression_ratio);
+    % Zapis do raportu (tylko stopień kompresji i SNR)
+    fprintf(fid_report, 'Kwantyzacja: %d bitów\n', m);
+    fprintf(fid_report, 'Stopień kompresji: %.2f\n', compression_ratio);
     fprintf(fid_report, 'SNR: %.2f dB\n', snr_db);
     fprintf(fid_report, '\n');
     
-    % Plot residual and reconstructed amplitudes
+    % Wykres amplitud resztkowych i zrekonstruowanych
     figure;
     subplot(2,1,1);
     plot(1:length(residual_amplitudes), residual_amplitudes, 'b');
-    title(sprintf('Residual Amplitudes (m=%d bits)', m));
+    title(sprintf('Amplitudy Resztkowe (m=%d bitów)', m));
     xlabel('Segment');
-    ylabel('Max Amplitude');
+    ylabel('Maksymalna Amplituda');
     subplot(2,1,2);
     plot(1:length(recon_amplitudes), recon_amplitudes, 'r');
-    title(sprintf('Reconstructed Amplitudes (m=%d bits)', m));
+    title(sprintf('Amplitudy Zrekonstruowane (m=%d bitów)', m));
     xlabel('Segment');
-    ylabel('Max Amplitude');
+    ylabel('Maksymalna Amplituda');
     saveas(gcf, sprintf('amplitudes_m%d.png', m));
     
-    % Reset plot data for next m
+    % Reset danych wykresu dla następnego m
     residual_amplitudes = [];
     recon_amplitudes = [];
 end
 
 fclose(fid_report);
 
-% Levinson-Durbin implementation with reflection coefficients
+% Implementacja Levinson-Durbin z współczynnikami odbicia
 function [a, k] = levinson_durbin(x, p)
     N = length(x);
-    % Autocorrelation
+    % Autokorelacja
     R = zeros(1, p+1);
     for m = 0:p
         sum_val = 0;
@@ -298,20 +278,20 @@ function [a, k] = levinson_durbin(x, p)
         R(m+1) = sum_val;
     end
     
-    % Initialize
+    % Inicjalizacja
     a = zeros(1, p+1);
     a(1) = 1;
     E = R(1);
     k = zeros(1, p);
     
-    % Levinson-Durbin recursion
+    % Rekursja Levinson-Durbin
     for m = 1:p
         lambda = 0;
         for j = 1:m
             lambda = lambda + a(j) * R(m-j+2);
         end
         if E == 0
-            k(m) = 0; % Prevent division by zero
+            k(m) = 0; % Zapobieganie dzieleniu przez zero
         else
             k(m) = -lambda / E;
         end
@@ -324,7 +304,7 @@ function [a, k] = levinson_durbin(x, p)
     end
 end
 
-% Convert reflection coefficients to AR coefficients
+% Konwersja współczynników odbicia na współczynniki AR
 function a = k2a(k)
     p = length(k);
     a = [1, zeros(1, p)];
