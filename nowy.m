@@ -6,9 +6,9 @@
 
 % Parametry
 fs = 11025;         % Częstotliwość próbkowania
-N = 512;           % Rozmiar segmentu (zwiększony dla mniejszej liczby segmentów)
+N = 256;           % Rozmiar segmentu (zgodnie z dokumentem)
 r = 10;            % Rząd modelu AR
-overlap = 20;      % Próbki nakładania (zwiększone)
+overlap = 20;      % Próbki nakładania
 quant_bits = [2, 3, 4]; % Poziomy kwantyzacji
 epsilon = 1e-6;    % Mała stała dla okna
 residual_scale = 1000; % Skala reszt do uniknięcia utraty kwantyzacji
@@ -31,8 +31,8 @@ if input_amplitude < 1e-6
     warning('Amplituda sygnału wejściowego jest bardzo niska (max = %.2e). Wyjście może być ciche.', input_amplitude);
 end
 
-% Funkcja okna (prostokątne, aby uniknąć problemów z odwróceniem)
-window = ones(1, N);
+%% Funkcja okna (Hanning dla "spłaszczenia" na krawędziach)
+window = 0.5 * [1 - cos(2 * pi * (0:N-1) / (N+1))]; % Okno Hanninga zgodnie z dokumentem
 
 % Inicjalizacja pliku wyjściowego dla raportu rekonstrukcji
 fid_report = fopen('reconstruction_report.txt', 'w');
@@ -55,7 +55,7 @@ for m = quant_bits
     
     % Przetwarzanie każdego segmentu
     for seg = 1:num_segments
-        % Wyodrębnienie segmentu z nakładaniem
+        %% Wyodrębnienie segmentu z nakładaniem
         start_idx = 1 + (seg-1) * (N - overlap);
         end_idx = min(start_idx + N - 1, num_samples);
         segment = audio(start_idx:end_idx);
@@ -63,13 +63,13 @@ for m = quant_bits
             segment = [segment, zeros(1, N - length(segment))];
         end
         
-        % Zastosowanie okna
+        %% Zastosowanie okna dla "spłaszczenia"
         segment_windowed = segment .* window;
         
-        % Wypełnienie zerami
+        %% Wypełnienie zerami po obydwu stronach
         padded_segment = [zeros(1, r), segment_windowed, zeros(1, r)];
         
-        % Algorytm Levinson-Durbin dla współczynników AR
+        %% Algorytm Levinson-Durbin dla współczynników AR
         [a, k] = levinson_durbin(padded_segment, r);
         
         % Sprawdzenie stabilności AR za pomocą współczynników odbicia
@@ -82,7 +82,7 @@ for m = quant_bits
         % Zapis współczynników AR
         all_a(seg, :) = a(2:end); % Wyklucz a(0)=1
         
-        % Obliczenie błędu resztkowego za pomocą filtru
+        %% Obliczenie błędów resztowych
         a_full = [1, a(2:end)];
         e = filter(a_full, 1, segment_windowed);
         e = e(1:N); % Przycięcie do długości segmentu
@@ -95,23 +95,19 @@ for m = quant_bits
             e_max = 1e-6; % Zapobieganie dzieleniu przez zero
         end
         
-        % Skalowanie reszt, aby uniknąć utraty kwantyzacji
+        %% Kwantyzacja błędów resztowych
         e_scaled = e * residual_scale;
         e_max_scaled = e_max * residual_scale;
-        
-        % Kwantyzacja
         levels = 2^m;
         delta = 2 * e_max_scaled / (levels - 1);
         e_quant_indices = round((e_scaled + e_max_scaled) / delta); % Mapowanie na [0, 2^m-1]
         e_quant_indices = max(0, min(levels-1, e_quant_indices)); % Przycięcie
         all_e_quant_indices(seg, :) = e_quant_indices;
         
-        % Logowanie amplitudy resztkowej
-      
         residual_amplitudes = [residual_amplitudes, e_max];
     end
     
-    % Zapis danych skompresowanych
+    %% Zapis danych do pliku binarnego
     filename = sprintf('compressed_m%d.bin', m);
     fid = fopen(filename, 'w');
     fwrite(fid, all_a(:), 'float32'); % 32 bity na współczynnik
@@ -136,7 +132,7 @@ for m = quant_bits
     weight_sum = zeros(1, num_samples); % Śledzenie wag nakładania
     overlap_window = ones(1, N); % Jednolite okno dla dodawania nakładającego się
     
-    % Odczyt danych skompresowanych
+    %% Odczyt danych z pliku binarnego
     fid = fopen(filename, 'r');
     read_a = fread(fid, [num_segments, r], 'float32');
     read_emax = fread(fid, num_segments, 'float32');
@@ -145,14 +141,7 @@ for m = quant_bits
     read_m = fread(fid, 1, 'uint8');
     fclose(fid);
     
-    % Sprawdzenie błędów odczytu pliku
-    if any(size(read_a) ~= [num_segments, r]) || length(read_emax) ~= num_segments || any(size(read_e_quant_indices) ~= [num_segments, N]) || isempty(read_scale) || isempty(read_m)
-        fprintf(fid_report, 'Błąd: Błąd odczytu pliku dla m=%d bitów. Sprawdź integralność pliku skompresowanego.\n', m);
-        continue;
-    end
-    assert(read_m == m, 'Niezgodność bitów kwantyzacji w pliku skompresowanym.');
-    
-    % Rekonstrukcja sygnału z dodawaniem nakładającym się
+    %% Rekonstrukcja sygnału z dodawaniem nakładającym się
     for seg = 1:num_segments
         a = [1, read_a(seg, :)]; % Włącz a(0)=1
         e_max = read_emax(seg);
@@ -161,46 +150,33 @@ for m = quant_bits
         start_idx = 1 + (seg-1) * (N - overlap);
         end_idx = min(start_idx + N - 1, num_samples);
         
-        % Pomiń ciche segmenty
         if e_max < 1e-6
             segment_recon = zeros(1, N);
         else
-            % Rekonstrukcja reszt
             levels = 2^m;
             delta = 2 * (e_max * read_scale) / (levels - 1);
             e_quant = (e_quant_indices * delta - (e_max * read_scale)) / read_scale;
-            % Rekonstrukcja za pomocą filtru
             segment_recon = filter(1, a, e_quant);
             segment_recon = segment_recon(1:N);
         end
         
-        % Sprawdzenie NaN lub Inf
         if any(isnan(segment_recon)) || any(isinf(segment_recon))
             fprintf(fid_report, 'Ostrzeżenie: NaN lub Inf w segmencie %d (m=%d bitów). Ustawienie na zero.\n', seg, m);
             segment_recon(isnan(segment_recon) | isinf(segment_recon)) = 0;
         end
         
-        
-       
         recon_amplitudes = [recon_amplitudes, max(abs(segment_recon))];
         
-        % Dodawanie nakładające się
         if end_idx >= start_idx
             segment_len = end_idx - start_idx + 1;
             reconstructed(start_idx:end_idx) = reconstructed(start_idx:end_idx) + segment_recon(1:segment_len) .* overlap_window(1:segment_len);
             weight_sum(start_idx:end_idx) = weight_sum(start_idx:end_idx) + overlap_window(1:segment_len);
         end
-        
     end
     
     % Normalizacja regionów nakładających się
     weight_sum(weight_sum == 0) = 1; % Unikanie dzielenia przez zero
     reconstructed = reconstructed ./ weight_sum;
-    
-    % Obsługa pozostałych próbek
-    if end_idx < num_samples
-        reconstructed(end_idx+1:num_samples) = audio(end_idx+1:num_samples); % Wypełnienie oryginalnym audio
-    end
     
     % Weryfikacja pełnego sygnału zrekonstruowanego
     recon_amplitude = max(abs(reconstructed));
@@ -214,7 +190,7 @@ for m = quant_bits
         reconstructed = reconstructed * (input_amplitude / recon_amplitude);
     end
     
-    % Zapis pełnego audio zrekonstruowanego
+    %% Zapis zrekonstruowanego sygnału do pliku WAV
     recon_filename = sprintf('reconstructed_m%d.wav', m);
     audiowrite(recon_filename, reconstructed, fs);
     fprintf(fid_report, 'Zapisano pełny plik zrekonstruowany: %s\n', recon_filename);
@@ -238,7 +214,7 @@ for m = quant_bits
         fprintf(fid_report, 'Ostrzeżenie: Zerowa moc szumu dla m=%d bitów. SNR ustawione na Inf.\n', m);
     end
     
-    % Zapis do raportu (tylko stopień kompresji i SNR)
+    %% Zapis stopnia kompresji do raportu
     fprintf(fid_report, 'Kwantyzacja: %d bitów\n', m);
     fprintf(fid_report, 'Stopień kompresji: %.2f\n', compression_ratio);
     fprintf(fid_report, 'SNR: %.2f dB\n', snr_db);
@@ -258,14 +234,13 @@ for m = quant_bits
     ylabel('Maksymalna Amplituda');
     saveas(gcf, sprintf('amplitudes_m%d.png', m));
     
-    % Reset danych wykresu dla następnego m
     residual_amplitudes = [];
     recon_amplitudes = [];
 end
 
 fclose(fid_report);
 
-% Implementacja Levinson-Durbin z współczynnikami odbicia
+%% Implementacja Levinson-Durbin
 function [a, k] = levinson_durbin(x, p)
     N = length(x);
     % Autokorelacja
@@ -304,7 +279,7 @@ function [a, k] = levinson_durbin(x, p)
     end
 end
 
-% Konwersja współczynników odbicia na współczynniki AR
+%% Konwersja współczynników odbicia na współczynniki AR
 function a = k2a(k)
     p = length(k);
     a = [1, zeros(1, p)];
