@@ -3,12 +3,24 @@ Raport Rekonstrukcji
 Zapisano pełny plik zrekonstruowany: reconstructed_m2.wav
 Full reconstructed max amplitude: 7.24e-01
 Czas trwania pełnego zrekonstruowanego: 20.00 sekund
-Rozmiar pliku skompresowanego: 280205 bajtów
+Rozmiar pliku skompresowanego: 100877 bajtów
 Kwantyzacja: 2 bitów
-Stopień kompresji: 1.57
+Stopień kompresji: 34.97
 SNR: 2.28 dB
 
 Zapisano pełny plik zrekonstruowany: reconstructed_m3.wav
 Full reconstructed max amplitude: 7.24e-01
 Czas trwania pełnego zrekonstruowanego: 20.00 sekund
-Rozmiar pliku skompresowanego: 280205 bajtów
+Rozmiar pliku skompresowanego: 130765 bajtów
+Kwantyzacja: 3 bitów
+Stopień kompresji: 26.98
+SNR: 3.97 dB
+
+Zapisano pełny plik zrekonstruowany: reconstructed_m4.wav
+Full reconstructed max amplitude: 7.24e-01
+Czas trwania pełnego zrekonstruowanego: 20.00 sekund
+Rozmiar pliku skompresowanego: 160653 bajtów
+Kwantyzacja: 4 bitów
+Stopień kompresji: 21.96
+SNR: 5.51 dB
+

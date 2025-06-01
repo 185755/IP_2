@@ -108,25 +108,28 @@ for m = quant_bits
     end
     
     %% Zapis danych do pliku binarnego
+    nr_bits = "ubit" + num2str(m);
     filename = sprintf('compressed_m%d.bin', m);
     fid = fopen(filename, 'w');
+    fwrite(fid, m, 'uint8'); % Zapis bitów kwantyzacji
+    fwrite(fid, residual_scale, 'float32'); % 32 bity
     fwrite(fid, all_a(:), 'float32'); % 32 bity na współczynnik
     fwrite(fid, all_emax, 'float32'); % 32 bity na e_max
-    fwrite(fid, all_e_quant_indices(:), 'uint8'); % 8 bitów na indeks (wypełnione)
-    fwrite(fid, residual_scale, 'float32'); % 32 bity
-    fwrite(fid, m, 'uint8'); % Zapis bitów kwantyzacji
+    fwrite(fid, all_e_quant_indices(:), nr_bits); % 8 bitów na indeks (wypełnione)
+    
+    
     fclose(fid);
     
     % Obliczenie stosunku kompresji
     bits_per_residual = m; % Rzeczywiste bity użyte w kwantyzacji
-    compressed_size = (num_segments * r * 32 + num_segments * 32 + num_segments * N * 8 + 32 + 8); % bity
+    compressed_size = (num_segments * r * 32 + num_segments * 32 + num_segments * N * m + 32 + 8); % bity
     original_size = num_samples * 16; % bity
-    compression_ratio = original_size / compressed_size;
+%     compression_ratio = original_size / compressed_size;
     
     % Pobranie rzeczywistego rozmiaru pliku
     file_info = dir(filename);
     compressed_bytes = file_info.bytes;
-    
+    compression_ratio = original_size / compressed_bytes;
     % Odbiornik: Dekompresja
     reconstructed = zeros(1, num_samples);
     weight_sum = zeros(1, num_samples); % Śledzenie wag nakładania
@@ -134,11 +137,13 @@ for m = quant_bits
     
     %% Odczyt danych z pliku binarnego
     fid = fopen(filename, 'r');
+    read_m = fread(fid, 1, 'uint8');
+    read_scale = fread(fid, 1, 'float32');
+    read_nrBits = "ubit"+ num2str(read_m);
     read_a = fread(fid, [num_segments, r], 'float32');
     read_emax = fread(fid, num_segments, 'float32');
-    read_e_quant_indices = fread(fid, [num_segments, N], 'uint8');
-    read_scale = fread(fid, 1, 'float32');
-    read_m = fread(fid, 1, 'uint8');
+    read_e_quant_indices = fread(fid, [num_segments, N], read_nrBits);
+    
     fclose(fid);
     
     %% Rekonstrukcja sygnału z dodawaniem nakładającym się
